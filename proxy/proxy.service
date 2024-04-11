@@ -1,0 +1,13 @@
+[Unit]
+Description=Proxy
+After=multi-user.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/home/ec2-user/app/proxy
+WorkingDirectory=/home/ec2-user/app/
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

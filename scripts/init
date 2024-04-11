@@ -1,0 +1,28 @@
+#!/bin/sh
+
+cross build --target aarch64-unknown-linux-musl --release
+
+ssh -i ~/.ssh/login.pem ec2-user@3.22.67.226 -t "
+    rm -rf /home/ec2-user/app
+    mkdir /home/ec2-user/app
+" 2> /dev/null
+
+scp -i ~/.ssh/login.pem proxy/proxy.service ec2-user@3.22.67.226:/home/ec2-user/app/proxy.service
+scp -i ~/.ssh/login.pem target/aarch64-unknown-linux-musl/release/proxy ec2-user@3.22.67.226:/home/ec2-user/app/proxy
+scp -i ~/.ssh/login.pem -r proxy/https_certs ec2-user@3.22.67.226:/home/ec2-user/app/https_certs
+
+echo launching systemd service...
+
+ssh -i ~/.ssh/login.pem ec2-user@3.22.67.226 -t "
+    sudo mv /home/ec2-user/app/proxy.service /etc/systemd/system
+    sudo systemctl daemon-reload
+    sudo systemctl enable proxy.service
+    sudo systemctl stop proxy.service
+    sudo journalctl --rotate
+    sudo journalctl --vacuum-time=1s
+    sudo systemctl start proxy.service
+" &> /dev/null
+
+ssh -i ~/.ssh/login.pem ec2-user@3.22.67.226 -t "
+    sudo journalctl -fu proxy.service
+" 2> /dev/null
