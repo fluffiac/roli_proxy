@@ -1,274 +1,294 @@
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::OnceLock;
 
-use futures::FutureExt;
-use image::GenericImage;
+use futures::{Future, FutureExt};
+use itertools::Itertools;
 use tokio::sync::RwLock;
+use tokio::time::{sleep, Duration};
 use tokio::sync::{broadcast, mpsc};
 
 use crate::api;
+use crate::image::{self, Image};
 use crate::promise::{LazyPromise, Promise};
-use crate::query::{QueryBuilder, Query};
+use crate::query::{Query, QueryBuilder};
 
-static MAP: OnceLock<RwLock<HashMap<usize, Link>>> = OnceLock::new();
+#[derive(Default)]
+pub struct LinkMap {
+    inner: HashMap<usize, Link>,
+}
+
+type Ref<T> = tokio::sync::RwLockReadGuard<'static, T>;
+type MutRef<T> = tokio::sync::RwLockWriteGuard<'static, T>;
+
+impl LinkMap {
+    fn get_lock() -> &'static RwLock<Self> {
+        static MAP: OnceLock<RwLock<LinkMap>> = OnceLock::new();
+        MAP.get_or_init(Default::default)
+    }
+
+    pub async fn get_ref() -> Ref<Self> {
+        LinkMap::get_lock().read().await
+    }
+
+    async fn get_mut_ref() -> MutRef<Self> {
+        LinkMap::get_lock().write().await
+    }
+
+    pub fn get(&self, id: usize) -> Option<Link> {
+        self.inner.get(&id).cloned()
+    }
+
+    pub fn insert_image(&mut self, id: (usize, usize), res: (LazyPromise<Option<Image>>, Refresher)) {
+        println!("inserting image: {:?}", id);
+
+        self.inner.insert(id.0, Link::Image(res.0));
+        self.inner.insert(id.1, Link::RefreshImage(res.1));
+    }
+
+    pub fn remove_image(&mut self, id: (usize, usize)) {
+        println!("removing image: {:?}", id);
+
+        self.inner.remove(&id.0);
+        self.inner.remove(&id.1);
+    }
+
+    pub fn insert_preview(&mut self, id: usize, res: Promise<Option<Image>>) {
+        println!("inserting preview: {:?}", id);
+
+        self.inner.insert(id, Link::Previews(res));
+    }
+
+    pub fn remove_preview(&mut self, id: usize) {
+        println!("removing preview: {:?}", id);
+
+        self.inner.remove(&id);
+    }
+
+    pub fn insert_query(&mut self, id: (usize, usize), res: (Query, Refresher)) {
+        println!("inserting query: {:?}", id);
+
+        self.inner.insert(id.0, Link::Query(res.0));
+        self.inner.insert(id.1, Link::RefreshQuery(res.1));
+    }
+
+    pub fn remove_query(&mut self, id: (usize, usize)) {
+        println!("removing query: {:?}", id);
+
+        self.inner.remove(&id.0);
+        self.inner.remove(&id.1);
+    }
+}
 
 #[derive(Clone)]
 pub enum Link {
     /// (lazy image data)
-    Previews(Promise<Option<api::Image>>),
+    Previews(Promise<Option<Image>>),
     /// (url, lazy image data)
-    Image(LazyPromise<Option<api::Image>>),
+    Image(LazyPromise<Option<Image>>),
     /// (query)
     Query(Query),
     /// (image refresher)
-    RefreshImage(mpsc::Sender<()>),
+    RefreshImage(Refresher),
     /// (Query, refresher)
-    RefreshQuery(broadcast::Sender<()>),
+    RefreshQuery(Refresher),
 }
 
-type LinksRead = tokio::sync::RwLockReadGuard<'static, HashMap<usize, Link>>;
-type LinksWrite = tokio::sync::RwLockWriteGuard<'static, HashMap<usize, Link>>;
-
-pub async fn read_link_map() -> LinksRead {
-    MAP.get_or_init(Default::default).read().await
+struct Ids {
+    pub post_ids: Vec<(usize, usize)>,
+    pub query_id: usize,
+    pub preview_id: usize,
+    pub refresh_id: usize,
 }
 
-pub async fn write_link_map() -> LinksWrite {
-    MAP.get_or_init(Default::default).write().await
-}
-
-// [image, image_refresh], reget, previews, query_refresh
-type Ids = (Vec<(usize, usize)>, usize, usize, usize);
-
-// refactor into a better builder pattern with a ref instead of owned vec
-pub struct LinkBuilder {
-    map_ref: tokio::sync::RwLockWriteGuard<'static, HashMap<usize, Link>>,
-    query_refresh: broadcast::Sender<()>,
-    ids: Ids,
-    posts: Vec<Arc<api::Post>>,
-}
-
-impl LinkBuilder {
+impl Ids {
     /// Aquire a set of unique ids to associate with the Query values
-    fn get_ids(map_ref: &LinksWrite, post_ct: usize) -> Ids {
-        let mut ids = (0..)
-            .filter(|k| !map_ref.contains_key(k))
-            .take(post_ct * 2 + 3)
-            .collect::<Vec<_>>();
+    fn new(links: &LinkMap, post_ct: usize) -> Self {
+        let mut ids = (0_usize..).filter(|k| !links.inner.contains_key(k));
 
-        let [query_id, preview_id, refresh_id] = ids.split_off(ids.len() - 3)[..] else {
-            unreachable!()
-        };
-
-        let post_id = ids[..post_ct].iter().copied();
-        let refresh_post = ids[post_ct..].iter().copied();
-
-        (
-            post_id.zip(refresh_post).collect(),
-            query_id,
-            preview_id,
-            refresh_id,
-        )
-    }
-
-    pub async fn new_query(posts: api::Posts) -> Query {
-        let posts = posts
-            .posts
-            .iter()
-            .cloned()
-            .map(Arc::new)
-            .collect::<Vec<_>>();
-
-        Self::new(posts)
-            .await
-            .setup_posts()
-            .setup_preview()
-            .await
-            .setup_query()
-    }
-
-    async fn new(posts: Vec<Arc<api::Post>>) -> Self {
-        let (all_refresh, _) = broadcast::channel(1);
-
-        let map_ref = write_link_map().await;
-
-        let ids = Self::get_ids(&map_ref, posts.len());
+        let post_ids = ids.by_ref().take(post_ct * 2).tuples().collect();
 
         Self {
-            map_ref,
-            query_refresh: all_refresh,
+            post_ids,
+            query_id: ids.next().expect("never ending iterator ended"),
+            preview_id: ids.next().expect("never ending iterator ended"),
+            refresh_id: ids.next().expect("never ending iterator ended"),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub enum Refresher {
+    One(mpsc::Sender<()>),
+    Many(broadcast::Sender<()>)
+}
+
+impl Refresher {
+    pub fn refresh(&self) {
+        match self {
+            Self::One(tx) => drop(tx.try_send(())),
+            Self::Many(tx) => drop(tx.send(())),
+        }
+    }
+}
+
+struct RefreshHandler {
+    refresh: broadcast::Sender<()>,
+}
+
+impl RefreshHandler {
+    fn new() -> Self {
+        Self { 
+            refresh: broadcast::channel(1).0   
+        }
+    }
+
+    /// Attach a teardown future to this handlers global refresh signal.
+    ///
+    /// The execution of the teardown future will begin after the given
+    /// duration. Calling the `refresh` method on a `Refresher` associated 
+    /// with this handler will reset the timer.
+    fn attach<F>(&self, len: u64, f: F)
+    where
+        F: Future + Send + 'static
+    {
+        let mut many = self.refresh.subscribe();
+
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    () = sleep(Duration::from_secs(len)) => break,
+                    Ok(()) = many.recv() => (),
+                }
+    
+                println!("resource refreshed");
+            }
+
+            f.await;
+        });
+    }
+
+    /// Attach a teardown future to this handlers global refresh signal,
+    /// and a refresh signal local to this specific future.
+    ///
+    /// The execution of the teardown future will begin after the given
+    /// duration. Calling the `refresh` method on a `Refresher` associated 
+    /// with this handler, or the one returned by this method, will reset
+    /// the timer.
+    fn attach_with_local<F>(&self, len: u64, f: F) -> Refresher
+    where
+        F: Future + Send + 'static,
+    {
+        let mut many = self.refresh.subscribe();
+        let (refresh, mut one) = mpsc::channel(1);
+
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    () = sleep(Duration::from_secs(len)) => break,
+                    Ok(()) = many.recv() => (),
+                    Some(()) = one.recv() => (),
+                }
+    
+                println!("resource refreshed");
+            }
+
+            f.await;
+        });
+
+        Refresher::One(refresh)
+    }
+
+    fn into_refresher(self) -> Refresher {
+        Refresher::Many(self.refresh)
+    }
+}
+
+// todo: refactor into BIG FAT FUNCTION
+pub struct NewLinkCtx {
+    map: MutRef<LinkMap>,
+    refresh: RefreshHandler,
+    posts: api::Posts,
+    ids: Ids,
+}
+
+impl NewLinkCtx {
+    async fn new(posts: api::Posts) -> Self {
+        let map = LinkMap::get_mut_ref().await;
+        let ids = Ids::new(&map, posts.len());
+
+        Self {
+            map,
+            refresh: RefreshHandler::new(),
             ids,
             posts,
         }
     }
+}
 
-    fn setup_posts(mut self) -> Self {
-        let posts = self.posts.iter().cloned();
-        let posts_ids = posts.zip(self.ids.0.iter());
+fn setup_posts(ctx: &mut NewLinkCtx) {
+    for (post, &ids) in ctx.posts.iter().zip(&ctx.ids.post_ids) {
+        let url = post.sample.url.clone();
 
-        for (post, &(image_id, refresh_id)) in posts_ids {
-            let (refresh_tx, refresh_rx) = mpsc::channel(1);
-            let query_refresh = self.query_refresh.subscribe();
-
-            // todo: Post Arc<str>
-            let url = post.sample.url.clone();
-            let promise = LazyPromise::new(async move {
-                println!("fetching image: {url}");
-                api::image(url).map(Result::ok).await
-            });
-
-            println!("registered: image {image_id}");
-            println!("registered: image_refresh {refresh_id}");
-
-            self.map_ref.insert(image_id, Link::Image(promise));
-            self.map_ref
-                .insert(refresh_id, Link::RefreshImage(refresh_tx));
-
-            tokio::spawn(async move {
-                expire(1200, query_refresh, Some(refresh_rx)).await;
-
-                let mut map_ref = write_link_map().await;
-
-                println!("expired: image {image_id}");
-                println!("expired: image_refresh {refresh_id}");
-
-                map_ref.remove(&image_id);
-                map_ref.remove(&refresh_id);
-            });
-        }
-
-        self
-    }
-
-    async fn setup_preview(mut self) -> Self {
-        let (_, _, preview_id, _) = self.ids;
-
-        let query_refresh = self.query_refresh.subscribe();
-
-        // todo: Post Arc<str>
-        let urls = self
-            .posts
-            .iter()
-            .map(|post| post.preview.url.clone())
-            .collect::<Vec<_>>();
-        let promise = Promise::new(get_preview(urls)).await;
-
-        println!("registered: preview {preview_id}",);
-
-        self.map_ref.insert(preview_id, Link::Previews(promise));
-
-        tokio::spawn(async move {
-            expire(600, query_refresh, None).await;
-
-            let mut map_ref = write_link_map().await;
-
-            println!("expired: preview {preview_id}",);
-
-            map_ref.remove(&preview_id);
+        let image = LazyPromise::new(async move {
+            println!("fetching image: {url}");
+            api::get_image(url).map(Result::ok).await
         });
 
-        self
-    }
+        let refresh = ctx.refresh.attach_with_local(1200, async move {
+            let mut map = LinkMap::get_mut_ref().await;
 
-    fn setup_query(mut self) -> Query {
-        let (post_ids, query_id, preview_id, refresh_id) = self.ids;
-        let query_refresh = self.query_refresh.subscribe();
-
-        let mut query = QueryBuilder::new();
-        query.push_header(query_id, preview_id, refresh_id);
-
-        let posts = self.posts.iter().zip(post_ids.iter());
-        for (post, &(link_id, refresh_id)) in posts {
-            query.push_post(post, link_id, refresh_id);
-        }
-        let query: Query = query.into_query();
-
-        println!("registered: query {query_id}");
-        println!("registered: query_refresh {refresh_id}");
-
-        self.map_ref.insert(query_id, Link::Query(query.clone()));
-        self.map_ref
-            .insert(refresh_id, Link::RefreshQuery(self.query_refresh));
-
-        tokio::spawn(async move {
-            expire(600, query_refresh, None).await;
-
-            let mut map_ref = write_link_map().await;
-
-            println!("expired: query {query_id}");
-            println!("expired: query_refresh {refresh_id}");
-
-            map_ref.remove(&query_id);
-            map_ref.remove(&refresh_id);
+            map.remove_image(ids);
         });
 
-        query
+        ctx.map.insert_image(ids, (image, refresh));
     }
 }
 
-// expiration logic
-async fn expire(
-    len: u64,
-    mut renew_query: broadcast::Receiver<()>,
-    renew_link: Option<mpsc::Receiver<()>>,
-) {
-    match renew_link {
-        Some(mut link) => loop {
-            tokio::select! {
-                () = tokio::time::sleep(tokio::time::Duration::from_secs(len)) => break,
-                Ok(()) = renew_query.recv() => (),
-                Some(()) = link.recv() => (),
-            }
+async fn setup_preview(ctx: &mut NewLinkCtx) {
+    let id = ctx.ids.preview_id;
 
-            println!("resource refreshed");
-        },
-        None => loop {
-            tokio::select! {
-                () = tokio::time::sleep(tokio::time::Duration::from_secs(len)) => break,
-                Ok(()) = renew_query.recv() => (),
-            }
+    let preview = Promise::new(image::make_preview(ctx.posts.clone())).await;
 
-            println!("resource refreshed");
-        },
-    }
+    ctx.refresh.attach(600, async move {
+        let mut map = LinkMap::get_mut_ref().await;
+
+        map.remove_preview(id);
+    });
+
+    ctx.map.insert_preview(id, preview);
 }
 
-// todo: make not shitty
-async fn get_preview(urls: Vec<String>) -> Option<api::Image> {
-    println!("generating preview...");
+fn setup_query(mut ctx: NewLinkCtx) -> Query {
+    let query = new_query(&ctx);
+    let ids = (ctx.ids.query_id, ctx.ids.refresh_id);
 
-    let urls = urls.iter().cloned().map(api::image);
+    ctx.refresh.attach(600, async move {
+        let mut map = LinkMap::get_mut_ref().await;
 
-    let pics = futures::future::try_join_all(urls).await.unwrap();
+        map.remove_query(ids);
+    });
 
-    let mut pic = image::ImageBuffer::<image::Rgba<u8>, _>::new(1500, 1500);
+    let refresher = ctx.refresh.into_refresher();
+    ctx.map.insert_query(ids, (query.clone(), refresher));
 
-    for (i, img) in (0..pic.len()).zip(pics.into_iter()) {
-        #[allow(clippy::cast_possible_truncation)]
-        let i = i as u32;
+    query
+}
 
-        let mem = image::load_from_memory(&img.data).unwrap();
+fn new_query(ctx: &NewLinkCtx) -> Query {
+    let mut builder = QueryBuilder::new();
+    builder.push_header(ctx.ids.query_id, ctx.ids.preview_id, ctx.ids.refresh_id);
 
-        let x = (i % 10) * 150 + (150 - mem.width()) / 2;
-        let y = (i / 10) * 150 + (150 - mem.height()) / 2;
-
-        pic.copy_from(&mem, x, y).unwrap();
+    for (post, &ids) in ctx.posts.iter().zip(&ctx.ids.post_ids) {
+        builder.push_post(post, ids);
     }
 
-    let mut buf = std::io::Cursor::new(Vec::new());
-    let _ = image::write_buffer_with_format(
-        &mut buf,
-        &pic,
-        1500,
-        1500,
-        image::ExtendedColorType::Rgba8,
-        image::ImageFormat::Png,
-    );
+    builder.into_query()
+}
 
-    let vec = buf.into_inner();
+pub async fn setup_links(posts: api::Posts) -> Query {
+    let mut ctx = NewLinkCtx::new(posts).await;
 
-    println!("finished generating preview");
-
-    Some(api::Image::new(vec.into_boxed_slice(), "image/png".into()))
+    setup_posts(&mut ctx);
+    setup_preview(&mut ctx).await;
+    setup_query(ctx)
 }

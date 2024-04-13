@@ -38,6 +38,7 @@ impl<T: Send + 'static + Sync> Promise<T> {
     }
 
     pub async fn get(&self) -> &T {
+        // this should never try to init the value
         self.item.get_or_init(futures::future::pending).await
     }
 }

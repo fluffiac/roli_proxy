@@ -1251,6 +1251,7 @@ dependencies = [
  "axum-server",
  "futures",
  "image",
+ "itertools",
  "reqwest",
  "serde",
  "serde_json",

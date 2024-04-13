@@ -22,9 +22,9 @@ impl QueryBuilder {
             .push_element(&refresh.to_string())
     }
 
-    pub fn push_post(&mut self, post: &api::Post, link: usize, refresh: usize) -> &mut Self {
+    pub fn push_post(&mut self, post: &api::Post, ids: (usize, usize)) -> &mut Self {
         self.push_newline()
-            .push_element(&link.to_string())
+            .push_element(&ids.0.to_string())
             .push_element(&post.id.to_string())
             .push_element(&post.file.width.to_string())
             .push_element(&post.file.height.to_string())
@@ -34,7 +34,7 @@ impl QueryBuilder {
             .push_element(&post.score.down.to_string())
             .push_element(&post.rating)
             .push_element(&post.file.ext)
-            .push_element(&refresh.to_string())
+            .push_element(&ids.1.to_string())
             .push_element("1200000")
     }
 

@@ -12,8 +12,9 @@ axum = "0.7.5"
 axum-server = { version = "0.6.0", features = ["rustls", "tls-rustls"] }
 futures = "0.3.30"
 image = "0.25.1"
+itertools = "0.12.1"
 reqwest = { version = "0.12.3", features = ["json"] }
-serde = { version = "1.0.197", features = ["serde_derive"] }
+serde = { version = "1.0.197", features = ["serde_derive", "rc"] }
 serde_json = "1.0.115"
 tokio = { version = "1.37.0", features = ["full"] }
 tower-http = { version = "0.5.2", features = ["trace"] }
