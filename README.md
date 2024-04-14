@@ -11,4 +11,6 @@ requests to my backend instead of the one hosted by the world author.
 artwork.](https://raw.githubusercontent.com/fluffiac/roli_proxy/master/assets/hugging.png)
 
 # Installation
-todo
+Download the `install.zip` folder in the releases section, and follow the
+included instructions. For security reasons, there is not an automatic 
+installer.
