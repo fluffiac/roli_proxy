@@ -1,0 +1,50 @@
+# installation instructions
+
+- cert installation
+    - double click `fluffiac.crt`
+    - click "Install Certificate..."
+
+    - select "Current User"
+    - click "Next"
+
+    - select "Place all certificates in the following store"
+    - browse, and select "Trusted Root Certification Authorities"
+    - click "Next"
+
+    - click "Finish"
+
+    - read and understand the security warning.
+    note: the tldr of the warning is that your computer will trust certificates issued by fluffiac. this allows
+          me to issue https certificates for websites that I do not have ownership over (like e.roli.ga, or the
+          url for your bank). it truly does make your device less secure, so don't install anything if this is 
+          something that concerns you.
+
+- modify hosts file
+    - double click the `hosts` shortcut
+    - give notepad admin rights
+    - add several new lines to the end of the file
+
+    - on one of the new lines, paste the following:
+3.22.67.226	e.roli.ga
+
+    - save the file, and restart your device
+
+- to confirm that the installation worked
+    - visit https://e.roli.ga/proxy_status on a non-firefox web browser
+    - if you see "proxy OK" then you're good to go
+    - if you see an SSL error, you did something incorrectly, and need to restart
+
+# uninstallation instructions
+
+- cert uninstallation
+    - type "Manage User Certificates" in the taskbar
+    - open the control panel page
+    - navigate to "Trusted Root Certification Authorities" > "Certificates"
+    - right-click "fluffiac :3"
+    - delete
+
+- modify hosts file
+    - double click the `hosts` shortcut
+    - give notepad admin rights
+    - remove any line that contains `e.roli.ga`
+    - restart your device
