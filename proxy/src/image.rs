@@ -29,7 +29,7 @@ impl IntoResponse for Image {
 }
 
 pub async fn make_preview(posts: api::Posts) -> Option<Image> {
-    println!("generating preview...");
+    log::info!("generating preview...");
 
     let urls = posts
         .iter()
@@ -61,7 +61,7 @@ pub async fn make_preview(posts: api::Posts) -> Option<Image> {
     })
     .await;
 
-    println!("finished generating preview");
+    log::info!("finished generating preview");
 
     preview.ok().flatten()
 }

@@ -11,6 +11,7 @@ use tokio::sync::{Barrier, Mutex, OnceCell};
 /// `get()` returns a Future that resolves to the inner `&T`.
 #[derive(Clone)]
 pub struct Promise<T> {
+    /// Shared reference to an asynchronously computed value.
     item: Arc<OnceCell<T>>,
 }
 
@@ -19,21 +20,22 @@ impl<T: Send + 'static + Sync> Promise<T> {
     where
         Fut: Future<Output = T> + Send + 'static,
     {
+        // todo: is there a way to do this without the weird af barrier stuff
         let item: Arc<OnceCell<T>> = Arc::default();
-        let ptr = item.clone();
 
         let bar = Arc::new(Barrier::new(2));
         let bar_c = bar.clone();
 
+        let ptr = item.clone();
         tokio::spawn(async move {
             let initer = ptr.get_or_init(|| fut);
 
-            bar_c.wait().await;
+            bar.wait().await;
 
             let _ = initer.await;
         });
 
-        bar.wait().await;
+        bar_c.wait().await;
         Self { item }
     }
 
@@ -43,9 +45,9 @@ impl<T: Send + 'static + Sync> Promise<T> {
     }
 }
 
-/// Asynchronously obtain a reference to a value that may not be ready yet.
+/// A shared refrence to a value that may not be ready yet.
 ///
-/// In other words, having a `LazyPromise<T>` is like having a `&T`, but the
+/// Holding a `LazyPromise<T>` is like having a `&T`, but the
 /// value may depend on the result of an asynchronous computation. Calling
 /// `get()` returns a Future that resolves to the inner `&T`.
 ///
@@ -62,21 +64,21 @@ impl<T: Send + 'static + Sync> LazyPromise<T> {
     where
         Fut: Future<Output = T> + Send + 'static,
     {
-        let item: Arc<OnceCell<T>> = Arc::default();
-
         let fut: BoxFuture<'static, T> = Box::pin(fut);
-        let fut = Arc::new(Mutex::new(fut));
 
-        Self { item, fut }
+        Self {
+            item: Arc::default(),
+            fut: Arc::new(Mutex::new(fut)),
+        }
+    }
+
+    async fn init(&self) -> T {
+        let mut t = self.fut.try_lock().expect("locked twice");
+        (&mut *t).await
     }
 
     pub async fn get(&self) -> &T {
-        self.item
-            .get_or_init(|| async {
-                let mut t = self.fut.try_lock().expect("locked twice");
-                (&mut *t).await
-            })
-            .await
+        self.item.get_or_init(|| self.init()).await
     }
 }
 

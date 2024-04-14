@@ -8,13 +8,15 @@ const EXCLUDES: &str = "-young+-type:webm+-type:gif";
 pub async fn query(query: &str, page: &str) -> Result<Posts, reqwest::Error> {
     let url = format!("https://e621.net/posts.json?limit=20&page={page}&tags={query}+{EXCLUDES}");
 
-    let posts: __Posts = Client::global().get(&url).await?.json().await?;
+    let posts: Root = HttpClient::global().get(&url).await?.json().await?;
 
     Ok(posts.posts)
 }
 
 pub async fn get_image(url: Arc<str>) -> Result<Image, reqwest::Error> {
-    let res = Client::global().get(&url).await?;
+    log::info!("getting image: {url}");
+
+    let res = HttpClient::global().get(&url).await?;
 
     let mime_type = res
         .headers()
@@ -28,11 +30,11 @@ pub async fn get_image(url: Arc<str>) -> Result<Image, reqwest::Error> {
     Ok(Image::new(data, mime_type))
 }
 
-struct Client {
+struct HttpClient {
     client: &'static reqwest::Client,
 }
 
-impl Client {
+impl HttpClient {
     /// Get a global instance of the http client.
     fn global() -> Self {
         static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
@@ -63,13 +65,15 @@ impl Client {
 //////////////////////////////////////////////////////////
 // JSON structure
 
-pub type Posts = Arc<[Post]>;
-
+// used to deserialize the json response, immediately turned into `Posts`
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct __Posts {
+#[doc(hidden)]
+struct Root {
     posts: Arc<[Post]>,
 }
+
+pub type Posts = Arc<[Post]>;
 
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
