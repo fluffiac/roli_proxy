@@ -2,3 +2,4 @@
 
 proxy/https_certs/**
 ca_certs/**
+.vscode

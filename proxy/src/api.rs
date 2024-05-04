@@ -1,18 +1,22 @@
+//! Manage backend API requests and responses.
+
 use std::sync::{Arc, OnceLock};
 
 use crate::image::Image;
 
-// blacklist
-const EXCLUDES: &str = "-young+-type:webm+-type:gif";
+/// Hardcoded blacklist
+const EXCLUDES: &str = "-young";
 
+/// Query the e621 API with a given query string and page number.
 pub async fn query(query: &str, page: &str) -> Result<Posts, reqwest::Error> {
-    let url = format!("https://e621.net/posts.json?limit=20&page={page}&tags={query}+{EXCLUDES}");
+    let url = format!("https://e621.net/posts.json?limit=20&page={page}&tags={query}+{EXCLUDES}+-type:webm+-type:gif");
 
     let posts: Root = HttpClient::global().get(&url).await?.json().await?;
 
     Ok(posts.posts)
 }
 
+/// Get an image from a URL, and return it as the crate `Image` type.
 pub async fn get_image(url: Arc<str>) -> Result<Image, reqwest::Error> {
     log::info!("getting image: {url}");
 
@@ -30,6 +34,7 @@ pub async fn get_image(url: Arc<str>) -> Result<Image, reqwest::Error> {
     Ok(Image::new(data, mime_type))
 }
 
+/// An HTTP client for the e621 API, with authorization headers.
 struct HttpClient {
     client: &'static reqwest::Client,
 }
@@ -57,6 +62,7 @@ impl HttpClient {
         Self { client }
     }
 
+    /// Perform a GET request.
     async fn get(&self, url: &str) -> Result<reqwest::Response, reqwest::Error> {
         self.client.get(url).send().await
     }
@@ -73,8 +79,10 @@ struct Root {
     posts: Arc<[Post]>,
 }
 
+/// A list of posts from the e621 API.
 pub type Posts = Arc<[Post]>;
 
+/// A post from the e621 API.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Post {

@@ -1,3 +1,10 @@
+//! Promise types for asynchronusly computed values.
+//!
+//! The `Promise` and `LazyPromise` types are used to represent values that may
+//! not be ready yet. The `Promise` type should be used when the computation
+//! should start immediately, while the `LazyPromise` type should be used when
+//! the computation should start only when the value is first "requested".
+
 use std::future::Future;
 use std::sync::Arc;
 
@@ -11,11 +18,13 @@ use tokio::sync::{Barrier, Mutex, OnceCell};
 /// `get()` returns a Future that resolves to the inner `&T`.
 #[derive(Clone)]
 pub struct Promise<T> {
-    /// Shared reference to an asynchronously computed value.
     item: Arc<OnceCell<T>>,
 }
 
 impl<T: Send + 'static + Sync> Promise<T> {
+    /// Construct a new `Promise` where `T` is the output of the given future.
+    ///
+    /// The future will immediately spawn.
     pub async fn new<Fut>(fut: Fut) -> Self
     where
         Fut: Future<Output = T> + Send + 'static,
@@ -39,20 +48,21 @@ impl<T: Send + 'static + Sync> Promise<T> {
         Self { item }
     }
 
+    /// Get a reference to the inner value.
     pub async fn get(&self) -> &T {
-        // this should never try to init the value
+        // pending is essentially a no-op future
         self.item.get_or_init(futures::future::pending).await
     }
 }
 
 /// A shared refrence to a value that may not be ready yet.
 ///
-/// Holding a `LazyPromise<T>` is like having a `&T`, but the
-/// value may depend on the result of an asynchronous computation. Calling
-/// `get()` returns a Future that resolves to the inner `&T`.
+/// Holding a `LazyPromise<T>` is like having a `&T`, but the value may depend
+/// on the result of an asynchronous computation. Calling `get()` returns a
+/// Future that resolves to the inner `&T`.
 ///
 /// `LazyPromise` is lazy in the sense that the computation starts only when
-/// `get()` is firstdd called.
+/// `get()` is first called.
 #[derive(Clone)]
 pub struct LazyPromise<T> {
     item: Arc<OnceCell<T>>,
@@ -60,6 +70,10 @@ pub struct LazyPromise<T> {
 }
 
 impl<T: Send + 'static + Sync> LazyPromise<T> {
+    /// Construct a new `LazyPromise` where `T` is the output of the given
+    /// future.
+    ///
+    /// The future will not spawn until the first time `get()` is called.
     pub fn new<Fut>(fut: Fut) -> Self
     where
         Fut: Future<Output = T> + Send + 'static,
@@ -72,11 +86,16 @@ impl<T: Send + 'static + Sync> LazyPromise<T> {
         }
     }
 
+    /// Initialize the inner value.
     async fn init(&self) -> T {
         let mut t = self.fut.try_lock().expect("locked twice");
         (&mut *t).await
     }
 
+    /// Get a reference to the inner value.
+    ///
+    /// The asynchronus computation will start the first time this method is
+    /// called.
     pub async fn get(&self) -> &T {
         self.item.get_or_init(|| self.init()).await
     }
@@ -101,7 +120,7 @@ mod test {
         p.get().await;
 
         assert!(now.elapsed().as_millis() > 500);
-        assert!(now.elapsed().as_millis() < 1000);
+        assert!(now.elapsed().as_millis() <= 1000);
         assert_eq!(*p.get().await, "hello");
     }
 

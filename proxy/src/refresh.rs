@@ -1,10 +1,12 @@
+//! Keepalive logic for deferring resource teardown.
+
 use futures::Future;
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::{sleep, Duration};
 
-#[derive(Clone)]
 /// A `Refresher` refreshes an "owned" resource, or something that
 /// that has registered takedown logic through a `RefreshHandler`.
+#[derive(Clone)]
 pub enum Refresher {
     One(mpsc::Sender<()>),
     Many(broadcast::Sender<()>),
@@ -50,8 +52,6 @@ impl RefreshHandler {
                     () = sleep(Duration::from_secs(len)) => break,
                     Ok(()) = many.recv() => (),
                 }
-
-                log::info!("resource refreshed");
             }
 
             f.await;
@@ -79,8 +79,6 @@ impl RefreshHandler {
                     Ok(()) = many.recv() => (),
                     Some(()) = one.recv() => (),
                 }
-
-                log::info!("resource refreshed");
             }
 
             f.await;

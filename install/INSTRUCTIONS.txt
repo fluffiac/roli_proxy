@@ -1,50 +1,86 @@
-# installation instructions
+Prelude
+------------------------------------------------
+) How does this work?
 
-- cert installation
-    - double click `fluffiac.crt`
-    - click "Install Certificate..."
+    When your computer communicates with a website, it has to translate an address
+    (like `google.com`) to an IP. This process is called "DNS Resolution", which can
+    be overridden. In this case, we want to direct traffic going to `e.roli.ga`, the 
+    site used by the "e621 Search" world, to the service that I am hosting at 
+    `3.22.67.226`. This is done by editing a file on your system. 
 
-    - select "Current User"
-    - click "Next"
+    We also have to install a `Root Certificate Authority`. HTTPS is designed to 
+    detect when URLs suddenly stop referring to their correct IPs, which is a very
+    very good thing! (someone nasty could point `your-bank.com` to their server!!)
+    We want to opt-out of this protection, which is done by installing the `Root CA`.
 
-    - select "Place all certificates in the following store"
-    - browse, and select "Trusted Root Certification Authorities"
-    - click "Next"
+    Diagram explaining what a `CA` does:
+    https://www.thesslstore.com/blog/wp-content/uploads/2020/08/certificate-authority.png
 
-    - click "Finish"
+    Note: When you install a `Root CA`, your computer will "blindly" trust any site
+    that I (fluffiac) issue certificates for. This means that, if I wanted to, and
+    had access to your network, I could trick your computer into thinking that it
+    is making a secure connection to any website while being able to read what your 
+    computer is doing!! If you're ultra-concerned about your digital privacy, do not
+    proceed with the installation!
 
-    - read and understand the security warning.
-    note: the tldr of the warning is that your computer will trust certificates issued by fluffiac. this allows
-          me to issue https certificates for websites that I do not have ownership over (like e.roli.ga, or the
-          url for your bank). it truly does make your device less secure, so don't install anything if this is 
-          something that concerns you.
+Jailbreak Installation
+------------------------------------------------
+) Step 1 - Certificate Installation
 
-- modify hosts file
-    - double click the `hosts` shortcut
-    - give notepad admin rights
-    - add several new lines to the end of the file
+    Double click `fluffiac.crt` in File Explorer, a window should pop up. Read the 
+    dialouge, then click "Install Certificate".
 
-    - on one of the new lines, paste the following:
-3.22.67.226	e.roli.ga
+    Select "Current User", then click "Next".
 
-    - save the file, and restart your device
+    Select "Place all certificates in the following store", browse the options, and 
+    select "Trusted Root Certification Authorities". Click "Next".
 
-- to confirm that the installation worked
-    - visit https://e.roli.ga/proxy_status on a non-firefox web browser
-    - if you see "proxy OK" then you're good to go
-    - if you see an SSL error, you did something incorrectly, and need to restart
+    Click "Finish". You should recieve a security warning. If you read and understood 
+    the above note, accept the warning, if not, please be sure you are aware of the 
+    security implications of installing a `Root CA`! 
 
-# uninstallation instructions
+) Step 2 - Host File Modification
 
-- cert uninstallation
-    - type "Manage User Certificates" in the taskbar
-    - open the control panel page
-    - navigate to "Trusted Root Certification Authorities" > "Certificates"
-    - right-click "fluffiac :3"
-    - delete
+    Double click the `hosts` shortcut in File Explorer. Notepad should ask for admin 
+    rights. 
 
-- modify hosts file
-    - double click the `hosts` shortcut
-    - give notepad admin rights
-    - remove any line that contains `e.roli.ga`
-    - restart your device
+    You should see some text already in this file. Read the file to understand what 
+    it is doing. Then, add the following line to the end:
+
+3.22.67.226        e.roli.ga
+
+    Save the file.
+
+) Step 3 - Confirmation
+
+    Visit `https://e.roli.ga/jailbreak_status` on a web browser that isn't firefox.
+
+    If you see "Cannot GET /jailbreak_status", then something went wrong while 
+    modifying your "Hosts" file, and you should retry that step.
+
+    If you see an SSL error, you probably need to restart your computer, or retry the 
+    Certificate Instalation step again.
+
+    If you see "jailbreak OK", then the installation worked! Go crazy! 
+
+Uninstallation
+------------------------------------------------
+) Step 1 - Certificate Uninstallation
+
+    Type "Manage User Certificates" in the taskbar. Open the first result.
+
+    Navigate to "Trusted Root Certification Authorities" > "Certificates".
+
+    Find "fluffiac :3", right click the entry, then click "Delete". The warning can 
+    be safely ignored, this will restore your machine to the state it was before 
+    installation.
+
+) Step 2 - Host File Modification
+
+    Double click the `hosts` shortcut in File Explorer. Notepad should ask for admin
+    rights. 
+
+    Remove the line that contains `e.roli.ga`. Save the file.
+
+    You may need to restart your device in case any of these configurations were 
+    cached. The "e621 Search" world will have its original functionality restored.

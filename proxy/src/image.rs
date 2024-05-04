@@ -1,3 +1,5 @@
+//! Image handling utilities
+
 use std::sync::Arc;
 
 use axum::http::header;
@@ -6,6 +8,7 @@ use image::{GenericImage, ImageBuffer, ImageFormat, Rgba};
 
 use crate::api;
 
+/// Helper struct that manages a byte buffer for an image and its mime type.
 #[derive(Clone)]
 pub struct Image {
     pub data: Box<[u8]>,
@@ -13,8 +16,16 @@ pub struct Image {
 }
 
 impl Image {
+    /// Create a new `Image` from a byte buffer and its mime type.
     pub fn new(data: Box<[u8]>, mime_type: Arc<str>) -> Self {
         Self { data, mime_type }
+    }
+
+    /// Clone the placeholder image.
+    pub fn placeholder() -> Self {
+        let bytes = include_bytes!("../../assets/missing.png");
+
+        Self::new(bytes.to_vec().into_boxed_slice(), "image/png".into())
     }
 }
 
@@ -28,6 +39,7 @@ impl IntoResponse for Image {
     }
 }
 
+/// Generate a composite "preview" image from an api response.
 pub async fn make_preview(posts: api::Posts) -> Option<Image> {
     log::info!("generating preview...");
 

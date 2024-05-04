@@ -1,3 +1,5 @@
+//! Contains a `LinkMap` struct that maps identifiers to `Link` variants.
+
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
@@ -10,47 +12,72 @@ use crate::image::{self, Image};
 use crate::promise::{LazyPromise, Promise};
 use crate::refresh::{RefreshHandler, Refresher};
 
+/// A map of `Link` variants, with their associated identifiers.
+///
+/// This struct is used to manage the lifecycle of `Link` variants, which are
+/// used to store information about resources that are available to the client.
+/// When the client makes a request to the `/s/` endpoint, the server will
+/// generate a `SearchMap` string that informs the client on how to fetch and
+/// refresh the resources assocaited with the query that generated the
+/// `SearchMap`.
+///
+/// The `setup_links` function is called by the server to generate the `links`
+/// for a given API response. This initially inserts several `Link` variants,
+/// and spawns tasks that will remove them after a certain period of time.
+/// The task details can be found in the `RefreshHandler` struct.
+#[derive(Default)]
+pub struct LinkMap {
+    inner: HashMap<usize, Link>,
+}
+
+/// A map of `Link` variants.
+///
+/// See `LinkMap` for information on the lifecycle for values of this type,
+/// or the `link` function for information on the specific variants of `Link`.
 #[derive(Clone)]
 pub enum Link {
     /// Preview image `Promise`
     Previews(Promise<Option<Image>>),
     /// Sample image `LazyPromise`
     Image(LazyPromise<Option<Image>>),
-    /// (query)
-    Query(Query),
+    /// (search query)
+    SearchMap(SearchMap),
     /// (image refresher)
     RefreshImage(Refresher),
     /// (Query, refresher)
-    RefreshQuery(Refresher),
+    RefreshSearch(Refresher),
 }
 
-#[derive(Default)]
-pub struct LinkMap {
-    inner: HashMap<usize, Link>,
-}
-
+/// A reference to a `LinkMap`.
 type Ref<T> = tokio::sync::RwLockReadGuard<'static, T>;
+/// A mutable reference to a `LinkMap`.
 type MutRef<T> = tokio::sync::RwLockWriteGuard<'static, T>;
 
 impl LinkMap {
+    /// Get a lock to the global `LinkMap`.
     fn get_lock() -> &'static RwLock<Self> {
         static MAP: OnceLock<RwLock<LinkMap>> = OnceLock::new();
         MAP.get_or_init(Default::default)
     }
 
+    /// Get a reference to the global `LinkMap`.
     pub async fn get_ref() -> Ref<Self> {
         Self::get_lock().read().await
     }
 
+    /// Get a mutable reference to the global `LinkMap`.
     async fn get_mut_ref() -> MutRef<Self> {
         Self::get_lock().write().await
     }
 
+    /// Get an `Link` variant from its identifier, if it exists.
     pub fn get(&self, id: usize) -> Option<Link> {
         self.inner.get(&id).cloned()
     }
 
-    pub fn get_free_ids(&self, posts: &api::Posts) -> (Vec<(api::Post, PostIds)>, QueryIds) {
+    /// Get a list of free identifiers that can be used to insert new `Link`
+    /// variants.
+    fn get_free_ids(&self, posts: &api::Posts) -> (Vec<(api::Post, PostIds)>, HeaderIds) {
         let mut ids = (0_usize..).filter(|k| !self.inner.contains_key(k));
 
         let id_tups = ids
@@ -60,8 +87,8 @@ impl LinkMap {
             .map(PostIds::new);
         let post_ids = posts.iter().cloned().zip(id_tups).collect();
 
-        let query_ids = QueryIds {
-            query: ids.next().expect("never ending iter ended"),
+        let query_ids = HeaderIds {
+            search_map: ids.next().expect("never ending iter ended"),
             preview: ids.next().expect("never ending iter ended"),
             refresh: ids.next().expect("never ending iter ended"),
         };
@@ -69,99 +96,123 @@ impl LinkMap {
         (post_ids, query_ids)
     }
 
-    pub fn insert_image(&mut self, ids: PostIds, res: (LazyPromise<Option<Image>>, Refresher)) {
+    /// Insert an image `Link` into the map.
+    fn insert_image(&mut self, ids: PostIds, res: (LazyPromise<Option<Image>>, Refresher)) {
         log::info!("inserting image: {}", ids.post);
 
         self.inner.insert(ids.post, Link::Image(res.0));
         self.inner.insert(ids.refresh, Link::RefreshImage(res.1));
     }
 
-    pub fn remove_image(&mut self, ids: PostIds) {
+    /// Remove an image `Link` from the map.
+    ///
+    /// This is called by the `RefreshHandler` after a certain period of time,
+    /// unless a client calls its associated refresher `link`.
+    fn remove_image(&mut self, ids: PostIds) {
         log::info!("removing image: {}", ids.post);
 
         self.inner.remove(&ids.post);
         self.inner.remove(&ids.refresh);
     }
 
-    pub fn insert_preview(&mut self, ids: QueryIds, res: Promise<Option<Image>>) {
+    /// Insert a preview `Link` into the map.
+    fn insert_preview(&mut self, ids: HeaderIds, res: Promise<Option<Image>>) {
         log::info!("inserting preview: {}", ids.preview);
 
         self.inner.insert(ids.preview, Link::Previews(res));
     }
 
-    pub fn remove_preview(&mut self, ids: QueryIds) {
+    /// Remove a preview `Link` from the map.
+    ///
+    /// This is called by the `RefreshHandler` after a certain period of time,
+    /// unless a client calls its associated refresher `link`.
+    fn remove_preview(&mut self, ids: HeaderIds) {
         log::info!("removing preview: {}", ids.preview);
 
         self.inner.remove(&ids.preview);
     }
 
-    pub fn insert_query(&mut self, ids: QueryIds, res: (Query, Refresher)) {
-        log::info!("inserting query: {}", ids.query);
+    /// Insert a `SearchMap` `Link` into the map.
+    fn insert_query(&mut self, ids: HeaderIds, res: (SearchMap, Refresher)) {
+        log::info!("inserting query: {}", ids.search_map);
 
-        self.inner.insert(ids.query, Link::Query(res.0));
-        self.inner.insert(ids.refresh, Link::RefreshQuery(res.1));
+        self.inner.insert(ids.search_map, Link::SearchMap(res.0));
+        self.inner.insert(ids.refresh, Link::RefreshSearch(res.1));
     }
 
-    pub fn remove_query(&mut self, ids: QueryIds) {
-        log::info!("removing query: {}", ids.query);
+    /// Remove a `SearchMap` `Link` from the map.
+    ///
+    /// This is called by the `RefreshHandler` after a certain period of time,
+    /// unless a client calls its associated refresher `link`.
+    fn remove_query(&mut self, ids: HeaderIds) {
+        log::info!("removing query: {}", ids.search_map);
 
-        self.inner.remove(&ids.query);
+        self.inner.remove(&ids.search_map);
         self.inner.remove(&ids.refresh);
     }
 }
 
-pub async fn setup_links(posts: api::Posts) -> Query {
+/// From a list of `Posts` returned from the e621 API, create a `SearchMap`
+/// string that informs clients on how to fetch the posts returned by their
+/// search query.
+pub async fn setup_links(posts: api::Posts) -> SearchMap {
+    // obtain a mut LinkMap ref by locking the global struct.
     let mut map = LinkMap::get_mut_ref().await;
 
-    let refresh = RefreshHandler::new();
-    let (post_ids, ids) = map.get_free_ids(&posts);
+    let refresh_handler = RefreshHandler::new();
+    let (post_ids, header_ids) = map.get_free_ids(&posts);
 
-    let mut builder = QueryBuilder::new();
-    builder.push_header(ids);
+    let mut builder = SeachMapBuilder::new_with_header(header_ids);
 
     for (post, ids) in post_ids {
         builder.push_post(&post, ids);
 
-        let refresh = refresh.attach_with_local(1200, async move {
+        let refresher = refresh_handler.attach_with_local(1200, async move {
             LinkMap::get_mut_ref().await.remove_image(ids);
         });
 
         let url = post.sample.url.clone();
         let image = LazyPromise::new(api::get_image(url).map(Result::ok));
 
-        map.insert_image(ids, (image, refresh));
+        map.insert_image(ids, (image, refresher));
     }
 
-    refresh.attach(600, async move {
-        let mut map = LinkMap::get_mut_ref().await;
-
-        map.remove_query(ids);
-        map.remove_preview(ids);
-    });
-
-    let query = builder.into_query();
+    let search_map = builder.into_query();
     let preview = Promise::new(image::make_preview(posts.clone())).await;
 
-    map.insert_query(ids, (query.clone(), refresh.into_refresher()));
-    map.insert_preview(ids, preview);
+    refresh_handler.attach(600, async move {
+        let mut map = LinkMap::get_mut_ref().await;
 
-    query
+        map.remove_query(header_ids);
+        map.remove_preview(header_ids);
+    });
+
+    map.insert_preview(header_ids, preview);
+    map.insert_query(
+        header_ids,
+        (search_map.clone(), refresh_handler.into_refresher()),
+    );
+
+    search_map
 }
 
+/// Helper struct that names the identifiers for a `SearchMap` header.
 #[derive(Clone, Copy)]
-pub struct QueryIds {
-    pub query: usize,
-    pub preview: usize,
-    pub refresh: usize,
+struct HeaderIds {
+    search_map: usize,
+    preview: usize,
+    refresh: usize,
 }
 
+/// Helper struct that names the identifiers for a `SearchMap` post.
 #[derive(Clone, Copy)]
-pub struct PostIds {
-    pub post: usize,
-    pub refresh: usize,
+struct PostIds {
+    post: usize,
+    refresh: usize,
 }
 
 impl PostIds {
+    /// Create a new `PostIds` from a pair of identifiers.
     const fn new(ids: (usize, usize)) -> Self {
         Self {
             post: ids.0,
@@ -170,53 +221,64 @@ impl PostIds {
     }
 }
 
-pub type Query = Arc<str>;
+/// A `SearchMap` string.
+///
+/// This is a type alias for an `Arc<str>`, which is a reference-counted string.
+/// This allows for the `SearchMap` to be shared between multiple threads
+/// without needing to clone the inner data.
+type SearchMap = Arc<str>;
 
-pub struct QueryBuilder(String);
+/// A builder for creating a `SearchMap` string.
+///
+/// This builder is a helper for creating the string returned by the `e.roli.ga`
+/// `/s/` endpoint. The format is described in the `new_with_header` and
+/// `push_post` methods.
+struct SeachMapBuilder(String);
 
-impl QueryBuilder {
-    pub const fn new() -> Self {
-        Self(String::new())
+impl SeachMapBuilder {
+    /// Construct a new `SearchMapBuilder`.
+    ///
+    /// This function builds the headers for the `SearchMap` string.
+    fn new_with_header(ids: HeaderIds) -> Self {
+        let mut this = Self(String::new());
+        this.push_element::<' '>("600000")
+            .push_element::<','>(&ids.search_map.to_string())
+            .push_element::<','>(&ids.preview.to_string())
+            .push_element::<','>(&ids.refresh.to_string());
+        this
     }
 
-    pub fn push_header(&mut self, ids: QueryIds) -> &mut Self {
-        self.push_element("600000")
-            .push_element(&ids.query.to_string())
-            .push_element(&ids.preview.to_string())
-            .push_element(&ids.refresh.to_string())
+    /// Push `Post` metadata to the inner  `SearchMap` string, along with it's
+    /// `link` ids.
+    fn push_post(&mut self, post: &api::Post, ids: PostIds) -> &mut Self {
+        self.push_element::<'\n'>(&ids.post.to_string())
+            .push_element::<','>(&post.id.to_string())
+            .push_element::<','>(&post.sample.width.to_string())
+            .push_element::<','>(&post.sample.height.to_string())
+            .push_element::<','>(&post.preview.width.to_string())
+            .push_element::<','>(&post.preview.height.to_string())
+            .push_element::<','>(&post.score.up.to_string())
+            .push_element::<','>(&post.score.down.to_string())
+            .push_element::<','>(&post.rating)
+            .push_element::<','>(&post.file.ext)
+            .push_element::<','>(&ids.refresh.to_string())
+            .push_element::<','>("1200000")
     }
 
-    pub fn push_post(&mut self, post: &api::Post, ids: PostIds) -> &mut Self {
-        self.push_newline()
-            .push_element(&ids.post.to_string())
-            .push_element(&post.id.to_string())
-            .push_element(&post.sample.width.to_string())
-            .push_element(&post.sample.height.to_string())
-            .push_element(&post.preview.width.to_string())
-            .push_element(&post.preview.height.to_string())
-            .push_element(&post.score.up.to_string())
-            .push_element(&post.score.down.to_string())
-            .push_element(&post.rating)
-            .push_element(&post.file.ext)
-            .push_element(&ids.refresh.to_string())
-            .push_element("1200000")
-    }
-
-    pub fn push_element(&mut self, element: &str) -> &mut Self {
-        if let None | Some('\n') = self.0.chars().last() {
-        } else {
-            self.0.push(',');
+    /// Push an element to the inner `SearchMap` string.
+    fn push_element<const SEPARATOR: char>(&mut self, element: &str) -> &mut Self {
+        match SEPARATOR {
+            ',' => self.0.push(','),
+            '\n' => self.0.push('\n'),
+            ' ' => (),
+            _ => unreachable!(),
         }
         self.0.push_str(element);
         self
     }
 
-    pub fn push_newline(&mut self) -> &mut Self {
-        self.0.push('\n');
-        self
-    }
-
-    pub fn into_query(self) -> Query {
+    /// Convert the `SearchMapBuilder` into a `SearchMap`.
+    fn into_query(self) -> SearchMap {
         Arc::from(self.0.into_boxed_str())
     }
 }

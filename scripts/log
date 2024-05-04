@@ -1,5 +1,5 @@
 #!/bin/sh
 
 ssh -i ~/.ssh/login.pem ec2-user@3.22.67.226 -t "
-    sudo journalctl -n200 -fu proxy.service
+    sudo journalctl -ru proxy.service
 " 2> /dev/null
